@@ -1,9 +1,9 @@
 services:
-  - type: web
+  - type: worker
     name: freetheai-checkin
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python checkin_multi.py
     envVars:
-      - key: DISCORD_TOKEN
+      - key: DISCORD_TOKENS
         sync: false
