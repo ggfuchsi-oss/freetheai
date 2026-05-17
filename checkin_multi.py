@@ -7,6 +7,7 @@ Add tokens to the TOKENS list below, one per FreeTheAI account.
 import os, time, random, string, json, threading, datetime
 import urllib.request, urllib.error
 import websocket
+import keep_alive
 
 # ── Add your Discord user tokens here ────────────────────────────────────────
 # Set DISCORD_TOKENS as a comma-separated list in Render env vars
