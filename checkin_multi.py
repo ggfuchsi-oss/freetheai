@@ -8,6 +8,7 @@ import os, time, random, string, json, threading, datetime
 import urllib.request, urllib.error
 import websocket
 import keep_alive
+keep_alive.start()
 
 # ── Add your Discord user tokens here ────────────────────────────────────────
 # Set DISCORD_TOKENS as a comma-separated list in Render env vars
