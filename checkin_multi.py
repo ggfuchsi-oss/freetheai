@@ -7,8 +7,20 @@ Add tokens to the TOKENS list below, one per FreeTheAI account.
 import os, time, random, string, json, threading, datetime
 import urllib.request, urllib.error
 import websocket
-import keep_alive
-keep_alive.start()
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+def _start_http():
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        def do_HEAD(self):
+            self.send_response(200); self.end_headers()
+        def log_message(self, *a): pass
+    port = int(os.environ.get("PORT", 10000))
+    print(f"[http] binding port {port}", flush=True)
+    threading.Thread(target=HTTPServer(("0.0.0.0", port), _H).serve_forever, daemon=True).start()
+
+_start_http()
 
 # ── Add your Discord user tokens here ────────────────────────────────────────
 # Set DISCORD_TOKENS as a comma-separated list in Render env vars
