@@ -79,82 +79,124 @@ def discord_headers(token):
 
 # ── AI question solver ─────────────────────────────────────────────────────────
 def _openrouter(messages: list, max_tokens: int = 50) -> str:
-    if ZENLLM_KEY:
-        url   = "https://api.zenllm.org/v1/chat/completions"
-        key   = ZENLLM_KEY
-        model = "xiaomi/mimo-v2.5-pro-full"
-    else:
-        url   = "https://openrouter.ai/api/v1/chat/completions"
-        key   = OPENROUTER_KEY
-        model = "openai/gpt-4o-mini"
+    global _or_key_idx
+    keys = [OPENROUTER_KEY] if OPENROUTER_KEY else []
+    keys += [k for k in _OR_KEYS if k != OPENROUTER_KEY]
 
-    resp = _http(
-        url,
-        data={"model": model, "messages": messages, "max_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    return resp["choices"][0]["message"]["content"].strip()
+    last_err = None
+    for i, key in enumerate(keys):
+        try:
+            resp = _http(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data={"model": "qwen/qwen3-coder:free", "messages": messages, "max_tokens": max_tokens},
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            )
+            _or_key_idx = i
+            return resp["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err
 
 
 def ask_ai(label: str, placeholder: str) -> str:
-    if not OPENROUTER_KEY and not ZENLLM_KEY:
-        print("[ai] No AI key set, trying regex fallback", flush=True)
-        return _regex_fallback(label)
+    # Try local solver first — covers all known question types without network
+    local = _solve_locally(label, placeholder)
+    if local:
+        print(f"[ai] Local solver: label={label!r} -> {local!r}", flush=True)
+        return local
 
-    print(f"[ai] Solving — label={label!r} placeholder={placeholder!r}", flush=True)
+    print(f"[ai] Solving via AI — label={label!r} placeholder={placeholder!r}", flush=True)
     try:
-        # Step 1: Solver — understand the question and reason out an answer
-        raw_answer = _openrouter([
+        final = _openrouter([
             {
                 "role": "system",
                 "content": (
-                    "You are solving a form field question. "
-                    "You will be given the field label and its placeholder text. "
-                    "Figure out what answer is expected and respond with just that answer. "
-                    "Think step by step if needed, but keep it short."
+                    "You are solving a short form challenge. "
+                    "Given the field label and placeholder, output ONLY the exact answer to type. "
+                    "Single word or number. No explanation. Nothing else."
                 ),
             },
             {
                 "role": "user",
                 "content": f"Label: {label}\nPlaceholder: {placeholder}",
             },
-        ], max_tokens=50)
-        print(f"[ai] Solver raw: {raw_answer!r}", flush=True)
-
-        # Step 2: Formatter — strip it down to the exact value to type
-        final = _openrouter([
-            {
-                "role": "system",
-                "content": (
-                    "You are a formatter. You receive a form field (label + placeholder) "
-                    "and a solved answer. Output ONLY the exact text to type into the field. "
-                    "The placeholder often shows the expected format — match it. "
-                    "Single word or number. No punctuation unless part of the answer. "
-                    "No explanation. Nothing else."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Label: {label}\n"
-                    f"Placeholder: {placeholder}\n"
-                    f"Solved answer: {raw_answer}"
-                ),
-            },
         ], max_tokens=10)
-        print(f"[ai] Formatter final: {final!r}", flush=True)
+        print(f"[ai] Answer: {final!r}", flush=True)
         return final
 
     except Exception as e:
-        print(f"[ai] Error: {e}, trying regex fallback", flush=True)
-        return _regex_fallback(label)
+        print(f"[ai] Error: {e}", flush=True)
+        return _regex_fallback(label, placeholder)
 
 
-def _regex_fallback(question: str) -> str:
-    nums = re.findall(r'\d+', question)
-    if len(nums) >= 2:
-        return str(min(int(n) for n in nums))
+# Multiple OpenRouter keys for rotation (set OPENROUTER_API_KEYS as comma-separated in env)
+_OR_KEYS = [k.strip() for k in os.environ.get("OPENROUTER_API_KEYS", "").split(",") if k.strip()]
+_or_key_idx = 0
+
+def _solve_locally(label: str, placeholder: str) -> str:
+    """Solve all known challenge types without AI."""
+    q  = label.strip()
+    ql = q.lower()
+    pl = placeholder.strip().lower().rstrip('.')
+
+    # Placeholder literally says "Type X" → answer is X
+    m = re.match(r'type\s+(\S+)$', pl)
+    if m:
+        return m.group(1)
+
+    # "Type word: marble"
+    m = re.match(r'(?i)type\s+word\s*:\s*(\S+)', q)
+    if m:
+        return m.group(1)
+
+    # "Review check: type no"
+    m = re.match(r'review\s+check\s*:\s*type\s+(\S+)', ql)
+    if m:
+        return m.group(1)
+
+    # "Nth word: word1 word2 word3"
+    m = re.match(r'(\d+)(?:st|nd|rd|th)\s+word\s*:\s*(.+)', ql)
+    if m:
+        n = int(m.group(1))
+        orig_words = re.split(r'\s+', re.search(r'(?i):\s*(.+)', q).group(1))
+        if 1 <= n <= len(orig_words):
+            return orig_words[n - 1]
+
+    # "Largest: 46 or 64?" / "Biggest: ..."
+    m = re.match(r'(?:largest|biggest|higher|greater)\s*:\s*(\d+)\s+or\s+(\d+)', ql)
+    if m:
+        return str(max(int(m.group(1)), int(m.group(2))))
+
+    # "Smallest: 89 or 98?" / "Lowest: ..."
+    m = re.match(r'(?:smallest|lowest|smaller|lower)\s*:\s*(\d+)\s+or\s+(\d+)', ql)
+    if m:
+        return str(min(int(m.group(1)), int(m.group(2))))
+
+    # "What is 15 + 6?" arithmetic
+    m = re.search(r'(\d+)\s*\+\s*(\d+)', q)
+    if m:
+        return str(int(m.group(1)) + int(m.group(2)))
+    m = re.search(r'(\d+)\s*-\s*(\d+)', q)
+    if m:
+        return str(int(m.group(1)) - int(m.group(2)))
+    m = re.search(r'(\d+)\s*[x*×]\s*(\d+)', q)
+    if m:
+        return str(int(m.group(1)) * int(m.group(2)))
+
+    # Last word after colon in label (e.g. "Type word: circle")
+    m = re.search(r':\s*(\w+)\s*$', q)
+    if m:
+        return m.group(1)
+
     return ""
+
+
+def _regex_fallback(label: str, placeholder: str = "") -> str:
+    ans = _solve_locally(label, placeholder)
+    if ans:
+        print(f"[ai] Local solver: {ans!r}", flush=True)
+    return ans
 
 # ── Command discovery ──────────────────────────────────────────────────────────
 def discover_checkin_command(token: str) -> bool:
@@ -249,7 +291,7 @@ def submit_modal(token: str, api_key: str, modal: dict, label: str) -> bool:
             else:
                 value = ask_ai(comp_label, comp_placeholder)
 
-            print(f"[{label}] Field '{comp_label}' → '{value}'", flush=True)
+            print(f"[{label}] Field '{comp_label}' -> '{value}'", flush=True)
             filled_row["components"].append({
                 "type": 4,
                 "custom_id": comp.get("custom_id", ""),
@@ -265,6 +307,7 @@ def submit_modal(token: str, api_key: str, modal: dict, label: str) -> bool:
         "session_id": session_id(),
         "nonce": nonce(),
         "data": {
+            "id": modal.get("id", ""),
             "custom_id": custom_id,
             "components": filled,
         },
